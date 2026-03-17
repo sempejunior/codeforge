@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Hatch / pip
+.hatch/
+pip-wheel-metadata/
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.pyright/
+pyrightconfig.json
+
+# Ruff
+.ruff_cache/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# Environment variables e secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials/
+
+# Banco de dados local
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# CodeForge runtime
+.codeforge/worktrees/
+.codeforge/sessions/
+.codeforge/cache/
+
+# Node / React (Fase 8)
+node_modules/
+dist/
+.next/
+.nuxt/
+.output/
+*.tsbuildinfo
+
+# Alembic (manter estrutura, ignorar só artefatos)
+alembic/versions/__pycache__/
