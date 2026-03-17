@@ -166,7 +166,12 @@ class LiteLLMProvider(AIProviderPort):
                                 json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
                             )
                         except json.JSONDecodeError:
-                            tool_input = {}
+                            try:
+                                from json_repair import repair_json
+
+                                tool_input = json.loads(repair_json(tc_data["arguments"]))
+                            except Exception:
+                                tool_input = {}
                         yield StreamPart(
                             type="tool_call",
                             tool_name=tc_data["name"],

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class AgentSessionCreateSchema(BaseModel):
-    id: str
+    id: str | None = None
     task_id: str
     agent_type: str
     model: str

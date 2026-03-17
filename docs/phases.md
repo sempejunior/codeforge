@@ -10,13 +10,14 @@
 | 4 | ✅ COMPLETA | 57 | Pipelines de orquestração |
 | 5B | ✅ COMPLETA | 45 | Domain: Demand, Story, Sprint |
 | 5 | ✅ COMPLETA | 9 | Persistence + API REST |
+| 5C | ✅ COMPLETA | 29 | Agent Intelligence Layer |
 | 6 | ⏳ PENDENTE | — | CLI + Execução via Claude Code |
 | 7 | ⏳ PENDENTE | — | Agentes de PM + Git + Code Review |
 | 8 | ⏳ PENDENTE | — | Dashboard React (PM + Dev) |
 | 9 | ⏳ PENDENTE | — | Time e colaboração |
 | 10 | ⏳ PENDENTE | — | Cloud execution (VMs efêmeras) |
 
-**Total atual: 267 testes, 0 falhas**
+**Total atual: 296 testes, 0 falhas**
 
 ---
 
@@ -410,6 +411,180 @@ src/codeforge/domain/
 
 ### Resultado
 - Suite completa: **267 passed, 0 failed**
+
+---
+
+## Fase 5C — Agent Intelligence Layer ✅
+
+**Objetivo:** Tornar o motor de agente mais robusto em produção e adicionar inteligência persistida por projeto — skills e memória que os agentes carregam no contexto. Fundação para os agentes de PM da Fase 7 (breakdown, demand_assistant) que precisam de contexto rico e estável entre execuções.
+
+**Motivação:** Análise comparativa com o projeto nanobot revelou três problemas concretos no motor atual e dois recursos ausentes que têm alto impacto no resultado dos agentes analíticos.
+
+### Melhorias no motor
+
+**1. Tolerância a JSON malformado (`litellm_provider.py`)**
+
+LLMs ocasionalmente geram tool call arguments com JSON truncado ou malformado (especialmente com streaming). Antes, `json.JSONDecodeError` silenciosamente descartava os argumentos (`tool_input = {}`). Agora, tenta recuperar via `json_repair` antes de desistir:
+
+```python
+# antes
+except json.JSONDecodeError:
+    tool_input = {}
+
+# depois
+except json.JSONDecodeError:
+    try:
+        from json_repair import repair_json
+        tool_input = json.loads(repair_json(tc_data["arguments"]))
+    except Exception:
+        tool_input = {}
+```
+
+Dependência adicionada ao `pyproject.toml`: `json-repair>=0.30`.
+
+**2. Tool error hint auto-correção (`run_agent_session.py`)**
+
+Quando uma tool lança exceção, o erro era devolvido puro ao LLM. Sem instrução explícita, modelos tendem a repetir a mesma chamada inválida em loop. Adicionado hint:
+
+```
+[Tool Error]: <mensagem original>
+
+[Analyze the error above and try a different approach.]
+```
+
+**3. Separação de runtime context no `PromptBuilder`**
+
+Informações efêmeras (ex: descrição da tarefa atual, output de sessão anterior) permanecem em mensagens do usuário. Skills e memória do projeto — que raramente mudam — ficam no system prompt. Isso preserva o cache de prompt do Anthropic entre turns, reduzindo custo e latência.
+
+`build_system_prompt()` agora aceita `skills: list[str]` e `memory_entries: list[str]`. A estrutura do prompt resultante:
+
+```
+[instrução base do agente]
+[Working directory: ...]
+
+## Project Memory
+[entradas de memória do projeto]
+
+## Project Instructions
+[skills ativas para este agente]
+
+## Additional Context
+[contexto extra passado pelo orquestrador]
+```
+
+### Novas entidades de domínio
+
+**`AgentSkill`** — bloco de instrução nomeado, escopo opcional por projeto e/ou tipo de agente. Quando `always_active=True`, injetado no system prompt de cada sessão do agente. Permite personalizar o comportamento dos agentes por projeto sem alterar código.
+
+Exemplos de uso:
+- `name="code_style"`, `agent_type=CODER`: "Neste projeto sempre use Tailwind, nunca CSS modules"
+- `name="review_focus"`, `agent_type=QA_REVIEWER`: "Priorize cobertura de casos de erro sobre style"
+- `name="stack_context"`, `agent_type=None` (global): descreve a stack para todos os agentes
+
+**`AgentMemory`** — bloco de texto chaveado por `(project_id, key)`, representando conhecimento condensado acumulado sobre o projeto. Atualizado manualmente (via API) ou programaticamente por agentes analíticos em fases futuras.
+
+Exemplos de uso:
+- `key="conventions"`: padrões identificados pelo breakdown agent ao ler o codebase
+- `key="qa_patterns"`: problemas recorrentes que o QA encontrou nas últimas execuções
+- `key="architecture"`: resumo da arquitetura gerado pelo demand_assistant
+
+### Novos ports de domínio
+
+- `AgentSkillRepositoryPort` — `save`, `get`, `list_for_agent(project_id, agent_type, only_active)`, `delete`
+- `AgentMemoryRepositoryPort` — `save`, `get(project_id, key)`, `list_for_project`, `delete`
+
+`list_for_agent` resolve a hierarquia: skills globais (project_id=None) + skills do projeto + skills do agent_type específico + skills genéricas (agent_type=None).
+
+### Persistence
+
+**Tabela `agent_skills`:**
+
+| Coluna | Tipo | Notas |
+|--------|------|-------|
+| id | VARCHAR(36) PK | UUID |
+| name | VARCHAR(255) | |
+| content | TEXT | instruções em markdown |
+| always_active | BOOLEAN | se true, sempre injetada no system prompt |
+| project_id | VARCHAR(36) FK nullable | NULL = skill global |
+| agent_type | VARCHAR(64) nullable | NULL = para todos os agentes |
+| created_at / updated_at | DATETIME | |
+
+**Tabela `agent_memory`:**
+
+| Coluna | Tipo | Notas |
+|--------|------|-------|
+| id | VARCHAR(36) PK | UUID |
+| project_id | VARCHAR(36) FK | CASCADE |
+| key | VARCHAR(255) | |
+| content | TEXT | markdown |
+| updated_at | DATETIME | |
+| — | UNIQUE(project_id, key) | uma entrada por chave por projeto |
+
+Migration: `0002_agent_intelligence.py`
+
+### API
+
+Novos endpoints em `/api/projects/{project_id}/`:
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/skills` | Lista skills do projeto (inclui globais) |
+| POST | `/skills` | Cria nova skill |
+| PUT | `/skills/{skill_id}` | Atualiza nome, conteúdo ou always_active |
+| DELETE | `/skills/{skill_id}` | Remove skill |
+| GET | `/memory` | Lista todas as entradas de memória do projeto |
+| PUT | `/memory` | Upsert por key (cria ou atualiza) |
+| DELETE | `/memory/{key}` | Remove entrada por key |
+
+### Arquivos
+
+```
+src/codeforge/domain/
+├── entities/        agent_skill.py, agent_memory.py
+└── ports/           agent_skill_repository.py, agent_memory_repository.py
+
+src/codeforge/infrastructure/
+├── persistence/
+│   ├── models.py         (+ AgentSkillModel, AgentMemoryModel)
+│   └── repositories.py   (+ SqlAlchemyAgentSkillRepository, SqlAlchemyAgentMemoryRepository)
+
+alembic/versions/
+└── 0002_agent_intelligence.py
+
+src/codeforge/application/services/
+└── prompt_builder.py     (+ skills, memory_entries params)
+
+src/codeforge/infrastructure/ai/
+└── litellm_provider.py   (json_repair fallback)
+
+src/codeforge/application/use_cases/
+└── run_agent_session.py  (tool error hint)
+
+src/codeforge/api/
+├── schemas/intelligence.py
+├── routers/intelligence.py
+├── dependencies.py  (+ AgentSkillRepository, AgentMemoryRepository no container)
+└── app.py           (+ intelligence router)
+```
+
+### Testes adicionados (29)
+
+```
+tests/unit/domain/
+  test_agent_skill.py          6
+  test_agent_memory.py         5
+
+tests/unit/infrastructure/
+  test_motor_robustness.py     8   (json_repair + tool error hint)
+
+tests/unit/application/
+  test_prompt_builder_v2.py    5   (skills + memory injection)
+
+tests/integration/infrastructure/
+  test_agent_intelligence_repositories.py   5
+
+Total novo: 29 — Suite: 296 passed, 0 failed
+```
 
 ---
 

@@ -127,12 +127,27 @@ def build_system_prompt(
     agent_type: AgentType,
     project_path: Path | None = None,
     extra_context: str | None = None,
+    skills: list[str] | None = None,
+    memory_entries: list[str] | None = None,
 ) -> str:
-    """Builds the system prompt for the given agent type."""
+    """Builds the system prompt for the given agent type.
+
+    Skills and memory_entries are stable content injected here (system prompt)
+    so they benefit from prompt caching across turns. Ephemeral per-session
+    context (task description, previous output) must go in user messages instead.
+    """
     base = _SYSTEM_PROMPTS.get(agent_type, "You are a helpful AI assistant.")
 
     if project_path is not None:
         base = f"Working directory: {project_path}\n\n{base}"
+
+    if memory_entries:
+        memory_block = "\n\n".join(memory_entries)
+        base = f"{base}\n\n## Project Memory\n\n{memory_block}"
+
+    if skills:
+        skills_block = "\n\n---\n\n".join(skills)
+        base = f"{base}\n\n## Project Instructions\n\n{skills_block}"
 
     if extra_context:
         base = f"{base}\n\n## Additional Context\n\n{extra_context}"

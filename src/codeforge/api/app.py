@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 
 from codeforge.api.dependencies import RepositoryContainer
-from codeforge.api.routers import agents, demands, projects, sprints, stories, tasks
+from codeforge.api.routers import agents, demands, intelligence, projects, sprints, stories, tasks
 from codeforge.infrastructure.persistence.database import (
     create_engine,
     create_session_factory,
     init_database,
 )
 from codeforge.infrastructure.persistence.repositories import (
+    SqlAlchemyAgentMemoryRepository,
     SqlAlchemyAgentSessionRepository,
+    SqlAlchemyAgentSkillRepository,
     SqlAlchemyDemandRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemySprintRepository,
@@ -41,7 +45,18 @@ def create_app(database_url: str = "sqlite+aiosqlite:///./codeforge.db") -> Fast
         story_repository=SqlAlchemyStoryRepository(session_factory),
         sprint_repository=SqlAlchemySprintRepository(session_factory),
         agent_session_repository=SqlAlchemyAgentSessionRepository(session_factory),
+        agent_skill_repository=SqlAlchemyAgentSkillRepository(session_factory),
+        agent_memory_repository=SqlAlchemyAgentMemoryRepository(session_factory),
     )
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error_handler(_: Request, exc: IntegrityError) -> JSONResponse:
+        msg = str(exc.orig) if exc.orig else str(exc)
+        return JSONResponse(status_code=409, content={"detail": f"Conflict: {msg}"})
 
     app.include_router(projects.router)
     app.include_router(demands.router)
@@ -49,6 +64,7 @@ def create_app(database_url: str = "sqlite+aiosqlite:///./codeforge.db") -> Fast
     app.include_router(sprints.router)
     app.include_router(tasks.router)
     app.include_router(agents.router)
+    app.include_router(intelligence.router)
 
     return app
 

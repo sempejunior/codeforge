@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
 
 from codeforge.api.dependencies import RepositoryContainer, get_repositories
@@ -25,7 +27,7 @@ async def create_agent_session(
     repositories: RepositoryContainer = Depends(get_repositories),
 ) -> AgentSessionResponseSchema:
     agent_session = AgentSession(
-        id=payload.id,
+        id=payload.id or str(uuid.uuid4()),
         task_id=payload.task_id,
         agent_type=AgentType(payload.agent_type),
         model=ModelId(payload.model),

@@ -267,7 +267,10 @@ async def _execute_tool_call(
         return str(result)
     except Exception as exc:
         logger.exception("Session %s: tool %r raised exception", session_id, tool_name)
-        return f"[Tool Error]: {exc}"
+        return (
+            f"[Tool Error]: {exc}\n\n"
+            "[Analyze the error above and try a different approach.]"
+        )
 
 
 def _try_parse_structured(content: str, schema: type) -> Any | None:

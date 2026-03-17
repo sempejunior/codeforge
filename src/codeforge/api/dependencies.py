@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from codeforge.infrastructure.persistence.database import get_session
 from codeforge.infrastructure.persistence.repositories import (
+    SqlAlchemyAgentMemoryRepository,
     SqlAlchemyAgentSessionRepository,
+    SqlAlchemyAgentSkillRepository,
     SqlAlchemyDemandRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemySprintRepository,
@@ -24,6 +26,8 @@ class RepositoryContainer:
     story_repository: SqlAlchemyStoryRepository
     sprint_repository: SqlAlchemySprintRepository
     agent_session_repository: SqlAlchemyAgentSessionRepository
+    agent_skill_repository: SqlAlchemyAgentSkillRepository
+    agent_memory_repository: SqlAlchemyAgentMemoryRepository
 
 
 def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:

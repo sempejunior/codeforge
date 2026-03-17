@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from codeforge.domain.entities.agent import AgentSession, AgentType, SessionOutcome, TokenUsage
+from codeforge.domain.entities.agent_memory import AgentMemory
+from codeforge.domain.entities.agent_skill import AgentSkill
 from codeforge.domain.entities.demand import Demand, DemandStatus, LinkedProject
 from codeforge.domain.entities.project import CodeReviewMode, Project, ProjectConfig
 from codeforge.domain.entities.sprint import Sprint, SprintMetrics, SprintStatus
@@ -17,6 +19,8 @@ from codeforge.domain.entities.task import (
     TaskSource,
     TaskStatus,
 )
+from codeforge.domain.ports.agent_memory_repository import AgentMemoryRepositoryPort
+from codeforge.domain.ports.agent_skill_repository import AgentSkillRepositoryPort
 from codeforge.domain.ports.demand_repository import DemandRepositoryPort
 from codeforge.domain.ports.project_repository import ProjectRepositoryPort
 from codeforge.domain.ports.sprint_repository import SprintRepositoryPort
@@ -31,7 +35,9 @@ from codeforge.domain.value_objects.story_id import StoryId
 from codeforge.domain.value_objects.task_id import TaskId
 
 from .models import (
+    AgentMemoryModel,
     AgentSessionModel,
+    AgentSkillModel,
     DemandModel,
     ProjectModel,
     SprintModel,
@@ -480,6 +486,149 @@ def _to_sprint(model: SprintModel | None) -> Sprint | None:
         status=SprintStatus(model.status),
         metrics=metrics,
         created_at=_as_utc(model.created_at),
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+class SqlAlchemyAgentSkillRepository(AgentSkillRepositoryPort):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(self, skill: AgentSkill) -> None:
+        async with self._session_factory() as session:
+            existing = await session.get(AgentSkillModel, skill.id)
+            if existing is None:
+                existing = AgentSkillModel(id=skill.id)
+                session.add(existing)
+            existing.name = skill.name
+            existing.content = skill.content
+            existing.always_active = skill.always_active
+            existing.project_id = str(skill.project_id) if skill.project_id else None
+            existing.agent_type = skill.agent_type.value if skill.agent_type else None
+            existing.created_at = _as_utc(skill.created_at)
+            existing.updated_at = _as_utc(skill.updated_at)
+            await session.commit()
+
+    async def get(self, skill_id: str) -> AgentSkill | None:
+        async with self._session_factory() as session:
+            model = await session.get(AgentSkillModel, skill_id)
+            return _to_agent_skill(model)
+
+    async def list_for_agent(
+        self,
+        project_id: ProjectId | None,
+        agent_type: AgentType | None,
+        only_active: bool = True,
+    ) -> list[AgentSkill]:
+        async with self._session_factory() as session:
+            stmt = select(AgentSkillModel)
+            if only_active:
+                stmt = stmt.where(AgentSkillModel.always_active.is_(True))
+            if project_id is not None:
+                stmt = stmt.where(
+                    or_(
+                        AgentSkillModel.project_id.is_(None),
+                        AgentSkillModel.project_id == str(project_id),
+                    )
+                )
+            else:
+                stmt = stmt.where(AgentSkillModel.project_id.is_(None))
+            if agent_type is not None:
+                stmt = stmt.where(
+                    or_(
+                        AgentSkillModel.agent_type.is_(None),
+                        AgentSkillModel.agent_type == agent_type.value,
+                    )
+                )
+            models = (await session.execute(stmt)).scalars().all()
+            return [skill for model in models if (skill := _to_agent_skill(model)) is not None]
+
+    async def list_by_project(self, project_id: ProjectId) -> list[AgentSkill]:
+        async with self._session_factory() as session:
+            stmt = select(AgentSkillModel).where(
+                AgentSkillModel.project_id == str(project_id)
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [skill for model in models if (skill := _to_agent_skill(model)) is not None]
+
+    async def delete(self, skill_id: str) -> None:
+        async with self._session_factory() as session:
+            model = await session.get(AgentSkillModel, skill_id)
+            if model is not None:
+                await session.delete(model)
+                await session.commit()
+
+
+class SqlAlchemyAgentMemoryRepository(AgentMemoryRepositoryPort):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(self, memory: AgentMemory) -> None:
+        async with self._session_factory() as session:
+            existing = await session.get(AgentMemoryModel, memory.id)
+            if existing is None:
+                stmt = select(AgentMemoryModel).where(
+                    AgentMemoryModel.project_id == str(memory.project_id),
+                    AgentMemoryModel.key == memory.key,
+                )
+                existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                existing = AgentMemoryModel(id=memory.id)
+                session.add(existing)
+            existing.project_id = str(memory.project_id)
+            existing.key = memory.key
+            existing.content = memory.content
+            existing.updated_at = _as_utc(memory.updated_at)
+            await session.commit()
+
+    async def get(self, project_id: ProjectId, key: str) -> AgentMemory | None:
+        async with self._session_factory() as session:
+            stmt = select(AgentMemoryModel).where(
+                AgentMemoryModel.project_id == str(project_id),
+                AgentMemoryModel.key == key,
+            )
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_agent_memory(model)
+
+    async def list_for_project(self, project_id: ProjectId) -> list[AgentMemory]:
+        async with self._session_factory() as session:
+            stmt = select(AgentMemoryModel).where(
+                AgentMemoryModel.project_id == str(project_id)
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [mem for model in models if (mem := _to_agent_memory(model)) is not None]
+
+    async def delete(self, memory_id: str) -> None:
+        async with self._session_factory() as session:
+            model = await session.get(AgentMemoryModel, memory_id)
+            if model is not None:
+                await session.delete(model)
+                await session.commit()
+
+
+def _to_agent_skill(model: AgentSkillModel | None) -> AgentSkill | None:
+    if model is None:
+        return None
+    return AgentSkill(
+        id=model.id,
+        name=model.name,
+        content=model.content,
+        always_active=model.always_active,
+        project_id=ProjectId(model.project_id) if model.project_id else None,
+        agent_type=AgentType(model.agent_type) if model.agent_type else None,
+        created_at=_as_utc(model.created_at),
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+def _to_agent_memory(model: AgentMemoryModel | None) -> AgentMemory | None:
+    if model is None:
+        return None
+    return AgentMemory(
+        id=model.id,
+        project_id=ProjectId(model.project_id),
+        key=model.key,
+        content=model.content,
         updated_at=_as_utc(model.updated_at),
     )
 
