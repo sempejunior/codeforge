@@ -48,12 +48,17 @@ def build_default_registry() -> ToolRegistry:
     """Creates a ToolRegistry pre-populated with all builtin tools."""
     from codeforge.infrastructure.tools.bash_tool import BashTool
     from codeforge.infrastructure.tools.edit_tool import EditTool
+    from codeforge.infrastructure.tools.exec_tool import ExecTool
     from codeforge.infrastructure.tools.glob_tool import GlobTool
     from codeforge.infrastructure.tools.grep_tool import GrepTool
     from codeforge.infrastructure.tools.read_tool import ReadTool
     from codeforge.infrastructure.tools.write_tool import WriteTool
 
     registry = ToolRegistry()
-    for tool in [ReadTool(), WriteTool(), EditTool(), BashTool(), GlobTool(), GrepTool()]:
+    tools = [
+        ReadTool(), WriteTool(), EditTool(), BashTool(),
+        ExecTool(), GlobTool(), GrepTool(),
+    ]
+    for tool in tools:
         registry.register(tool)
     return registry

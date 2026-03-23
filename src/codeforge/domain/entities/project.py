@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from ..value_objects.project_id import ProjectId
+from ..value_objects.team_id import TeamId
 
 
 class CodeReviewMode(StrEnum):
@@ -31,9 +32,7 @@ class ProjectConfig:
 class Project:
     id: ProjectId
     name: str
-    path: str
-    repo_url: str | None = None
-    default_branch: str = "main"
+    team_id: TeamId | None = None
     config: ProjectConfig = field(default_factory=ProjectConfig)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -42,14 +41,10 @@ class Project:
     def create(
         cls,
         name: str,
-        path: str,
-        repo_url: str | None = None,
-        default_branch: str = "main",
+        team_id: TeamId | None = None,
     ) -> Project:
         return cls(
             id=ProjectId.generate(),
             name=name,
-            path=path,
-            repo_url=repo_url,
-            default_branch=default_branch,
+            team_id=team_id,
         )

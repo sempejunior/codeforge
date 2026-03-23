@@ -239,7 +239,8 @@ async def test_reviewer_provider_failure_returns_error(tmp_path: Path):
         )
 
     assert result.success is False
-    assert "AUTH_FAILURE" in (result.error or "").upper() or "failed" in (result.error or "").lower()
+    err = (result.error or "").lower()
+    assert "auth_failure" in err or "failed" in err
 
 
 @pytest.mark.asyncio

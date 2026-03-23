@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -92,7 +93,9 @@ async def run_qa_loop(
         qa_report = _parse_qa_report(project_path, iteration=cycle)
 
         if qa_report.has_recurring_issues(qa_history):
-            logger.warning("QA loop: task=%s recurring issues detected after cycle %d", task_id, cycle)
+            logger.warning(
+                "QA loop: task=%s recurring issues detected after cycle %d", task_id, cycle
+            )
             return QALoopResult(
                 success=False,
                 qa_report=qa_report,
@@ -181,7 +184,7 @@ def _parse_qa_report(project_path: Path, iteration: int) -> QAReport:
 def _build_report_from_dict(data: dict, iteration: int) -> QAReport:
     issues: list[QAIssue] = []
     for item in data.get("issues", []):
-        try:
+        with contextlib.suppress(ValueError, KeyError):
             issues.append(
                 QAIssue(
                     title=str(item.get("title", "Unknown issue")),
@@ -191,8 +194,6 @@ def _build_report_from_dict(data: dict, iteration: int) -> QAReport:
                     suggested_fix=item.get("suggested_fix"),
                 )
             )
-        except (ValueError, KeyError):
-            pass
 
     verdict_str = str(data.get("verdict", "unknown")).lower()
     try:

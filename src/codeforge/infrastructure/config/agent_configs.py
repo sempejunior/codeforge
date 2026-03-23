@@ -5,10 +5,11 @@ from codeforge.domain.value_objects.thinking_level import ThinkingLevel
 
 _BASE_READ: frozenset[str] = frozenset({"Read", "Glob", "Grep"})
 _BASE_WRITE: frozenset[str] = frozenset({"Write", "Edit", "Bash"})
+_EXEC: frozenset[str] = frozenset({"Exec"})
 _WEB: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
-_ALL: frozenset[str] = _BASE_READ | _BASE_WRITE | _WEB
+_ALL: frozenset[str] = _BASE_READ | _BASE_WRITE | _EXEC | _WEB
 _SPEC: frozenset[str] = _BASE_READ | {"Write"} | _WEB
-_QA: frozenset[str] = _BASE_READ | _BASE_WRITE
+_QA: frozenset[str] = _BASE_READ | _BASE_WRITE | _EXEC
 
 AGENT_CONFIGS: dict[AgentType, AgentConfig] = {
     AgentType.COMPLEXITY_ASSESSOR: AgentConfig(
@@ -63,6 +64,22 @@ AGENT_CONFIGS: dict[AgentType, AgentConfig] = {
         tools=_QA,
         thinking_level=ThinkingLevel.MEDIUM,
         max_steps=400,
+        context_window_warning_pct=0.85,
+        context_window_abort_pct=0.90,
+        convergence_nudge_pct=None,
+    ),
+    AgentType.BREAKDOWN: AgentConfig(
+        tools=_BASE_READ,
+        thinking_level=ThinkingLevel.HIGH,
+        max_steps=150,
+        context_window_warning_pct=0.85,
+        context_window_abort_pct=0.90,
+        convergence_nudge_pct=None,
+    ),
+    AgentType.DEMAND_ASSISTANT: AgentConfig(
+        tools=frozenset(),
+        thinking_level=ThinkingLevel.MEDIUM,
+        max_steps=80,
         context_window_warning_pct=0.85,
         context_window_abort_pct=0.90,
         convergence_nudge_pct=None,

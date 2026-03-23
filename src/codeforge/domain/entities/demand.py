@@ -13,6 +13,7 @@ from ..events.demand_events import (
 )
 from ..value_objects.demand_id import DemandId
 from ..value_objects.project_id import ProjectId
+from ..value_objects.team_id import TeamId
 
 
 class DemandStatus(StrEnum):
@@ -23,6 +24,14 @@ class DemandStatus(StrEnum):
     IN_SPRINT = "in_sprint"
     DONE = "done"
     CANCELLED = "cancelled"
+
+
+class GenerationStatus(StrEnum):
+    NONE = "none"
+    ANALYZING_PROJECTS = "analyzing_projects"
+    GENERATING_STORIES = "generating_stories"
+    DONE = "done"
+    ERROR = "error"
 
 
 VALID_DEMAND_TRANSITIONS: dict[DemandStatus, frozenset[DemandStatus]] = {
@@ -55,7 +64,10 @@ class Demand:
     business_objective: str
     acceptance_criteria: list[str]
     linked_projects: list[LinkedProject]
+    team_id: TeamId | None = None
     status: DemandStatus = DemandStatus.DRAFT
+    generation_status: GenerationStatus = GenerationStatus.NONE
+    generation_error: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -97,6 +109,7 @@ class Demand:
         business_objective: str,
         acceptance_criteria: list[str] | None = None,
         linked_projects: list[LinkedProject] | None = None,
+        team_id: TeamId | None = None,
     ) -> tuple[Demand, list[DomainEvent]]:
         demand_id = DemandId.generate()
         demand = cls(
@@ -105,6 +118,7 @@ class Demand:
             business_objective=business_objective,
             acceptance_criteria=acceptance_criteria or [],
             linked_projects=linked_projects or [],
+            team_id=team_id,
         )
         events: list[DomainEvent] = [
             DemandCreated(demand_id=str(demand_id), title=title)

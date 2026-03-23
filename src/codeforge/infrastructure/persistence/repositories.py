@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -8,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from codeforge.domain.entities.agent import AgentSession, AgentType, SessionOutcome, TokenUsage
 from codeforge.domain.entities.agent_memory import AgentMemory
 from codeforge.domain.entities.agent_skill import AgentSkill
-from codeforge.domain.entities.demand import Demand, DemandStatus, LinkedProject
+from codeforge.domain.entities.demand import Demand, DemandStatus, GenerationStatus, LinkedProject
 from codeforge.domain.entities.project import CodeReviewMode, Project, ProjectConfig
+from codeforge.domain.entities.repository import AnalysisStatus, Repository, RepositoryStatus
 from codeforge.domain.entities.sprint import Sprint, SprintMetrics, SprintStatus
 from codeforge.domain.entities.story import Story, StoryStatus
 from codeforge.domain.entities.task import (
@@ -19,20 +21,32 @@ from codeforge.domain.entities.task import (
     TaskSource,
     TaskStatus,
 )
+from codeforge.domain.entities.team import Team
+from codeforge.domain.entities.team_document import (
+    TeamDocument,
+    TeamDocumentKind,
+    TeamDocumentSource,
+)
 from codeforge.domain.ports.agent_memory_repository import AgentMemoryRepositoryPort
 from codeforge.domain.ports.agent_skill_repository import AgentSkillRepositoryPort
 from codeforge.domain.ports.demand_repository import DemandRepositoryPort
 from codeforge.domain.ports.project_repository import ProjectRepositoryPort
+from codeforge.domain.ports.repository_store import RepositoryStorePort
 from codeforge.domain.ports.sprint_repository import SprintRepositoryPort
 from codeforge.domain.ports.story_repository import StoryRepositoryPort
 from codeforge.domain.ports.task_repository import TaskRepositoryPort
+from codeforge.domain.ports.team_document_repository import TeamDocumentRepositoryPort
+from codeforge.domain.ports.team_repository import TeamRepositoryPort
 from codeforge.domain.value_objects.complexity import ComplexityTier
 from codeforge.domain.value_objects.demand_id import DemandId
 from codeforge.domain.value_objects.model_id import ModelId
 from codeforge.domain.value_objects.project_id import ProjectId
+from codeforge.domain.value_objects.repository_id import RepositoryId
 from codeforge.domain.value_objects.sprint_id import SprintId
 from codeforge.domain.value_objects.story_id import StoryId
 from codeforge.domain.value_objects.task_id import TaskId
+from codeforge.domain.value_objects.team_document_id import TeamDocumentId
+from codeforge.domain.value_objects.team_id import TeamId
 
 from .models import (
     AgentMemoryModel,
@@ -40,10 +54,179 @@ from .models import (
     AgentSkillModel,
     DemandModel,
     ProjectModel,
+    RepositoryModel,
     SprintModel,
     StoryModel,
+    TaskExecutionModel,
     TaskModel,
+    TaskReviewModel,
+    TeamDocumentModel,
+    TeamModel,
 )
+
+
+class SqlAlchemyTeamRepository(TeamRepositoryPort):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(self, team: Team) -> None:
+        async with self._session_factory() as session:
+            existing = await session.get(TeamModel, str(team.id))
+            if existing is None:
+                existing = TeamModel(id=str(team.id))
+                session.add(existing)
+            existing.name = team.name
+            existing.description = team.description
+            existing.created_at = _as_utc(team.created_at)
+            existing.updated_at = _as_utc(team.updated_at)
+            await session.commit()
+
+    async def get_by_id(self, team_id: TeamId) -> Team | None:
+        async with self._session_factory() as session:
+            model = await session.get(TeamModel, str(team_id))
+            return _to_team(model)
+
+    async def list_all(self) -> list[Team]:
+        async with self._session_factory() as session:
+            stmt = select(TeamModel).order_by(TeamModel.created_at.desc())
+            models = (await session.execute(stmt)).scalars().all()
+            return [team for model in models if (team := _to_team(model)) is not None]
+
+    async def delete(self, team_id: TeamId) -> None:
+        async with self._session_factory() as session:
+            model = await session.get(TeamModel, str(team_id))
+            if model is not None:
+                await session.delete(model)
+                await session.commit()
+
+
+class SqlAlchemyTeamDocumentRepository(TeamDocumentRepositoryPort):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(self, document: TeamDocument) -> None:
+        async with self._session_factory() as session:
+            existing = await session.get(TeamDocumentModel, str(document.id))
+            if existing is None:
+                existing = TeamDocumentModel(id=str(document.id))
+                session.add(existing)
+            existing.team_id = str(document.team_id)
+            existing.parent_id = str(document.parent_id) if document.parent_id else None
+            existing.title = document.title
+            existing.kind = document.kind.value
+            existing.content = document.content
+            existing.linked_project_id = (
+                str(document.linked_project_id) if document.linked_project_id else None
+            )
+            existing.linked_repository_id = (
+                str(document.linked_repository_id) if document.linked_repository_id else None
+            )
+            existing.source = document.source.value
+            existing.created_at = _as_utc(document.created_at)
+            existing.updated_at = _as_utc(document.updated_at)
+            await session.commit()
+
+    async def get_by_id(self, document_id: TeamDocumentId) -> TeamDocument | None:
+        async with self._session_factory() as session:
+            model = await session.get(TeamDocumentModel, str(document_id))
+            return _to_team_document(model)
+
+    async def list_by_team(self, team_id: TeamId) -> list[TeamDocument]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(TeamDocumentModel)
+                .where(TeamDocumentModel.team_id == str(team_id))
+                .order_by(TeamDocumentModel.created_at.asc())
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [doc for model in models if (doc := _to_team_document(model)) is not None]
+
+    async def list_by_project(self, project_id: ProjectId) -> list[TeamDocument]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(TeamDocumentModel)
+                .where(TeamDocumentModel.linked_project_id == str(project_id))
+                .order_by(TeamDocumentModel.created_at.asc())
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [doc for model in models if (doc := _to_team_document(model)) is not None]
+
+    async def find_generated_context_document(
+        self,
+        team_id: TeamId,
+        project_id: ProjectId,
+    ) -> TeamDocument | None:
+        async with self._session_factory() as session:
+            stmt = select(TeamDocumentModel).where(
+                TeamDocumentModel.team_id == str(team_id),
+                TeamDocumentModel.linked_project_id == str(project_id),
+                TeamDocumentModel.source == TeamDocumentSource.GENERATED.value,
+                TeamDocumentModel.kind == TeamDocumentKind.DOCUMENT.value,
+                TeamDocumentModel.title == "Contexto Gerado",
+            )
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_team_document(model)
+
+    async def list_by_repository(self, repository_id: RepositoryId) -> list[TeamDocument]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(TeamDocumentModel)
+                .where(TeamDocumentModel.linked_repository_id == str(repository_id))
+                .order_by(TeamDocumentModel.created_at.asc())
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [doc for model in models if (doc := _to_team_document(model)) is not None]
+
+    async def find_generated_repo_context_document(
+        self,
+        team_id: TeamId,
+        repository_id: RepositoryId,
+    ) -> TeamDocument | None:
+        async with self._session_factory() as session:
+            stmt = select(TeamDocumentModel).where(
+                TeamDocumentModel.team_id == str(team_id),
+                TeamDocumentModel.linked_repository_id == str(repository_id),
+                TeamDocumentModel.source == TeamDocumentSource.GENERATED.value,
+                TeamDocumentModel.kind == TeamDocumentKind.DOCUMENT.value,
+                TeamDocumentModel.title == "Contexto Gerado",
+            )
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_team_document(model)
+
+    async def find_folder_for_project(
+        self,
+        team_id: TeamId,
+        project_id: ProjectId,
+    ) -> TeamDocument | None:
+        async with self._session_factory() as session:
+            stmt = select(TeamDocumentModel).where(
+                TeamDocumentModel.team_id == str(team_id),
+                TeamDocumentModel.linked_project_id == str(project_id),
+                TeamDocumentModel.kind == TeamDocumentKind.FOLDER.value,
+            )
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_team_document(model)
+
+    async def find_folder_for_repository(
+        self,
+        team_id: TeamId,
+        repository_id: RepositoryId,
+    ) -> TeamDocument | None:
+        async with self._session_factory() as session:
+            stmt = select(TeamDocumentModel).where(
+                TeamDocumentModel.team_id == str(team_id),
+                TeamDocumentModel.linked_repository_id == str(repository_id),
+                TeamDocumentModel.kind == TeamDocumentKind.FOLDER.value,
+            )
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_team_document(model)
+
+    async def delete(self, document_id: TeamDocumentId) -> None:
+        async with self._session_factory() as session:
+            model = await session.get(TeamDocumentModel, str(document_id))
+            if model is not None:
+                await session.delete(model)
+                await session.commit()
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -63,9 +246,7 @@ class SqlAlchemyProjectRepository(ProjectRepositoryPort):
                 existing = ProjectModel(id=str(project.id))
                 session.add(existing)
             existing.name = project.name
-            existing.path = project.path
-            existing.repo_url = project.repo_url
-            existing.default_branch = project.default_branch
+            existing.team_id = str(project.team_id) if project.team_id else None
             existing.max_parallel_subtasks = project.config.max_parallel_subtasks
             existing.max_qa_cycles = project.config.max_qa_cycles
             existing.max_subtask_retries = project.config.max_subtask_retries
@@ -85,21 +266,94 @@ class SqlAlchemyProjectRepository(ProjectRepositoryPort):
             model = await session.get(ProjectModel, str(project_id))
             return _to_project(model)
 
-    async def get_by_path(self, path: str) -> Project | None:
-        async with self._session_factory() as session:
-            stmt = select(ProjectModel).where(ProjectModel.path == path)
-            model = (await session.execute(stmt)).scalar_one_or_none()
-            return _to_project(model)
-
     async def list_all(self) -> list[Project]:
         async with self._session_factory() as session:
             stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
             models = (await session.execute(stmt)).scalars().all()
             return [project for model in models if (project := _to_project(model)) is not None]
 
+    async def list_by_team(self, team_id: TeamId) -> list[Project]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(ProjectModel)
+                .where(ProjectModel.team_id == str(team_id))
+                .order_by(ProjectModel.created_at.desc())
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [project for model in models if (project := _to_project(model)) is not None]
+
     async def delete(self, project_id: ProjectId) -> None:
         async with self._session_factory() as session:
             model = await session.get(ProjectModel, str(project_id))
+            if model is not None:
+                await session.delete(model)
+                await session.commit()
+
+
+class SqlAlchemyRepositoryStore(RepositoryStorePort):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(self, repository: Repository) -> None:
+        async with self._session_factory() as session:
+            existing = await session.get(RepositoryModel, str(repository.id))
+            if existing is None:
+                existing = RepositoryModel(id=str(repository.id))
+                session.add(existing)
+            existing.project_id = str(repository.project_id)
+            existing.name = repository.name
+            existing.slug = repository.slug
+            existing.repo_url = repository.repo_url
+            existing.default_branch = repository.default_branch
+            existing.path = repository.path
+            existing.status = repository.status.value
+            existing.context_doc = repository.context_doc
+            existing.analysis_status = repository.analysis_status.value
+            existing.analysis_executor = repository.analysis_executor
+            existing.analysis_error = repository.analysis_error
+            existing.local_path_hint = repository.local_path_hint
+            existing.created_at = _as_utc(repository.created_at)
+            existing.updated_at = _as_utc(repository.updated_at)
+            await session.commit()
+
+    async def get_by_id(self, repository_id: RepositoryId) -> Repository | None:
+        async with self._session_factory() as session:
+            model = await session.get(RepositoryModel, str(repository_id))
+            return _to_repository(model)
+
+    async def list_by_project(self, project_id: ProjectId) -> list[Repository]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(RepositoryModel)
+                .where(RepositoryModel.project_id == str(project_id))
+                .order_by(RepositoryModel.created_at.asc())
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [
+                repository
+                for model in models
+                if (repository := _to_repository(model)) is not None
+            ]
+
+    async def list_all(self) -> list[Repository]:
+        async with self._session_factory() as session:
+            stmt = select(RepositoryModel).order_by(RepositoryModel.created_at.desc())
+            models = (await session.execute(stmt)).scalars().all()
+            return [
+                repository
+                for model in models
+                if (repository := _to_repository(model)) is not None
+            ]
+
+    async def get_by_repo_url(self, repo_url: str) -> Repository | None:
+        async with self._session_factory() as session:
+            stmt = select(RepositoryModel).where(RepositoryModel.repo_url == repo_url)
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            return _to_repository(model)
+
+    async def delete(self, repository_id: RepositoryId) -> None:
+        async with self._session_factory() as session:
+            model = await session.get(RepositoryModel, str(repository_id))
             if model is not None:
                 await session.delete(model)
                 await session.commit()
@@ -126,6 +380,7 @@ class SqlAlchemyTaskRepository(TaskRepositoryPort):
             existing.source_ref = task.source_ref
             existing.worktree_path = task.worktree_path
             existing.branch_name = task.branch_name
+            existing.pr_url = task.pr_url
             existing.error_message = task.error_message
             existing.execution_progress = {
                 "current_phase": task.execution_progress.current_phase,
@@ -178,6 +433,7 @@ class SqlAlchemyDemandRepository(DemandRepositoryPort):
                 session.add(existing)
             existing.title = demand.title
             existing.business_objective = demand.business_objective
+            existing.team_id = str(demand.team_id) if demand.team_id else None
             existing.acceptance_criteria = list(demand.acceptance_criteria)
             existing.linked_projects = [
                 {
@@ -187,6 +443,8 @@ class SqlAlchemyDemandRepository(DemandRepositoryPort):
                 for project in demand.linked_projects
             ]
             existing.status = demand.status.value
+            existing.generation_status = demand.generation_status.value
+            existing.generation_error = demand.generation_error
             existing.created_at = _as_utc(demand.created_at)
             existing.updated_at = _as_utc(demand.updated_at)
             await session.commit()
@@ -224,10 +482,14 @@ class SqlAlchemyStoryRepository(StoryRepositoryPort):
                 existing = StoryModel(id=str(story.id))
                 session.add(existing)
             existing.demand_id = str(story.demand_id)
+            existing.project_id = str(story.project_id) if story.project_id else None
             existing.sprint_id = str(story.sprint_id) if story.sprint_id else None
             existing.title = story.title
             existing.description = story.description
             existing.acceptance_criteria = list(story.acceptance_criteria)
+            existing.technical_references = list(story.technical_references)
+            existing.repository_ids = [str(repository_id) for repository_id in story.repository_ids]
+            existing.linked_projects = [str(project_id) for project_id in story.linked_projects]
             existing.status = story.status.value
             existing.created_at = _as_utc(story.created_at)
             existing.updated_at = _as_utc(story.updated_at)
@@ -368,6 +630,106 @@ class SqlAlchemyAgentSessionRepository:
                 if (session_obj := _to_agent_session(model)) is not None
             ]
 
+    async def list_all(self, limit: int = 100) -> list[AgentSession]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(AgentSessionModel)
+                .order_by(AgentSessionModel.started_at.desc())
+                .limit(limit)
+            )
+            models = (await session.execute(stmt)).scalars().all()
+            return [
+                session_obj
+                for model in models
+                if (session_obj := _to_agent_session(model)) is not None
+            ]
+
+
+class SqlAlchemyTaskExecutionRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(
+        self,
+        task_id: TaskId,
+        success: bool,
+        exit_code: int,
+        output: str,
+        changed_files: list[str],
+        diff: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            stmt = select(TaskExecutionModel).where(TaskExecutionModel.task_id == str(task_id))
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                existing = TaskExecutionModel(task_id=str(task_id), created_at=now, updated_at=now)
+                session.add(existing)
+            existing.success = success
+            existing.exit_code = exit_code
+            existing.output = output
+            existing.changed_files = changed_files
+            existing.diff = diff
+            existing.updated_at = now
+            await session.commit()
+
+    async def get_by_task_id(self, task_id: TaskId) -> dict[str, Any] | None:
+        async with self._session_factory() as session:
+            stmt = select(TaskExecutionModel).where(TaskExecutionModel.task_id == str(task_id))
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            if model is None:
+                return None
+            return {
+                "task_id": model.task_id,
+                "success": model.success,
+                "exit_code": model.exit_code,
+                "output": model.output,
+                "changed_files": list(model.changed_files),
+                "diff": model.diff,
+                "created_at": _as_utc(model.created_at),
+                "updated_at": _as_utc(model.updated_at),
+            }
+
+
+class SqlAlchemyTaskReviewRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def save(
+        self,
+        task_id: TaskId,
+        verdict: str,
+        summary: str,
+        issues: list[dict[str, str]],
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            stmt = select(TaskReviewModel).where(TaskReviewModel.task_id == str(task_id))
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                existing = TaskReviewModel(task_id=str(task_id), created_at=now, updated_at=now)
+                session.add(existing)
+            existing.verdict = verdict
+            existing.summary = summary
+            existing.issues = issues
+            existing.updated_at = now
+            await session.commit()
+
+    async def get_by_task_id(self, task_id: TaskId) -> dict[str, Any] | None:
+        async with self._session_factory() as session:
+            stmt = select(TaskReviewModel).where(TaskReviewModel.task_id == str(task_id))
+            model = (await session.execute(stmt)).scalar_one_or_none()
+            if model is None:
+                return None
+            return {
+                "task_id": model.task_id,
+                "verdict": model.verdict,
+                "summary": model.summary,
+                "issues": list(model.issues),
+                "created_at": _as_utc(model.created_at),
+                "updated_at": _as_utc(model.updated_at),
+            }
+
 
 def _to_project(model: ProjectModel | None) -> Project | None:
     if model is None:
@@ -387,9 +749,7 @@ def _to_project(model: ProjectModel | None) -> Project | None:
     return Project(
         id=ProjectId(model.id),
         name=model.name,
-        path=model.path,
-        repo_url=model.repo_url,
-        default_branch=model.default_branch,
+        team_id=TeamId(model.team_id) if model.team_id else None,
         config=config,
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
@@ -423,6 +783,7 @@ def _to_task(model: TaskModel | None) -> Task | None:
         source_ref=model.source_ref,
         worktree_path=model.worktree_path,
         branch_name=model.branch_name,
+        pr_url=model.pr_url,
         error_message=model.error_message,
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
@@ -445,7 +806,10 @@ def _to_demand(model: DemandModel | None) -> Demand | None:
         business_objective=model.business_objective,
         acceptance_criteria=list(model.acceptance_criteria),
         linked_projects=linked_projects,
+        team_id=TeamId(model.team_id) if model.team_id else None,
         status=DemandStatus(model.status),
+        generation_status=GenerationStatus(model.generation_status),
+        generation_error=model.generation_error,
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
     )
@@ -457,11 +821,37 @@ def _to_story(model: StoryModel | None) -> Story | None:
     return Story(
         id=StoryId(model.id),
         demand_id=DemandId(model.demand_id),
+        project_id=ProjectId(model.project_id) if model.project_id else None,
         title=model.title,
         description=model.description,
         acceptance_criteria=list(model.acceptance_criteria),
+        technical_references=list(model.technical_references),
+        repository_ids=[RepositoryId(repository_id) for repository_id in model.repository_ids],
+        linked_projects=[ProjectId(project_id) for project_id in model.linked_projects],
         sprint_id=SprintId(model.sprint_id) if model.sprint_id else None,
         status=StoryStatus(model.status),
+        created_at=_as_utc(model.created_at),
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+def _to_repository(model: RepositoryModel | None) -> Repository | None:
+    if model is None:
+        return None
+    return Repository(
+        id=RepositoryId(model.id),
+        project_id=ProjectId(model.project_id),
+        name=model.name,
+        slug=model.slug,
+        repo_url=model.repo_url,
+        default_branch=model.default_branch,
+        path=model.path,
+        status=RepositoryStatus(model.status),
+        context_doc=model.context_doc,
+        analysis_status=AnalysisStatus(model.analysis_status),
+        analysis_executor=model.analysis_executor,
+        analysis_error=model.analysis_error,
+        local_path_hint=model.local_path_hint,
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
     )
@@ -616,6 +1006,36 @@ def _to_agent_skill(model: AgentSkillModel | None) -> AgentSkill | None:
         always_active=model.always_active,
         project_id=ProjectId(model.project_id) if model.project_id else None,
         agent_type=AgentType(model.agent_type) if model.agent_type else None,
+        created_at=_as_utc(model.created_at),
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+def _to_team(model: TeamModel | None) -> Team | None:
+    if model is None:
+        return None
+    return Team(
+        id=TeamId(model.id),
+        name=model.name,
+        description=model.description,
+        created_at=_as_utc(model.created_at),
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+def _to_team_document(model: TeamDocumentModel | None) -> TeamDocument | None:
+    if model is None:
+        return None
+    return TeamDocument(
+        id=TeamDocumentId(model.id),
+        team_id=TeamId(model.team_id),
+        title=model.title,
+        kind=TeamDocumentKind(model.kind),
+        parent_id=TeamDocumentId(model.parent_id) if model.parent_id else None,
+        content=model.content,
+        linked_project_id=ProjectId(model.linked_project_id) if model.linked_project_id else None,
+        linked_repository_id=RepositoryId(model.linked_repository_id) if model.linked_repository_id else None,
+        source=TeamDocumentSource(model.source),
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
     )

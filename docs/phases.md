@@ -11,13 +11,13 @@
 | 5B | ✅ COMPLETA | 45 | Domain: Demand, Story, Sprint |
 | 5 | ✅ COMPLETA | 9 | Persistence + API REST |
 | 5C | ✅ COMPLETA | 29 | Agent Intelligence Layer |
-| 6 | ⏳ PENDENTE | — | CLI + Execução via Claude Code |
-| 7 | ⏳ PENDENTE | — | Agentes de PM + Git + Code Review |
-| 8 | ⏳ PENDENTE | — | Dashboard React (PM + Dev) |
+| 6 | ✅ COMPLETA | 11 | CLI + Execução via Claude Code |
+| 7 | ✅ COMPLETA | 10 | Breakdown Agent + GitHub Gateway + Demand Assistant |
+| 8 | ✅ COMPLETA | — | Dashboard React (PM + Dev) |
 | 9 | ⏳ PENDENTE | — | Time e colaboração |
 | 10 | ⏳ PENDENTE | — | Cloud execution (VMs efêmeras) |
 
-**Total atual: 296 testes, 0 falhas**
+**Total atual: 317 testes, 0 falhas**
 
 ---
 
@@ -588,44 +588,201 @@ Total novo: 29 — Suite: 296 passed, 0 failed
 
 ---
 
-## Fase 6 — CLI + Execução via Claude Code (PENDENTE)
+## Fase 6 — CLI + Execução via Claude Code ✅
 
 **Objetivo:** Primeiro ponto de contato real com o produto. Valida a hipótese central: task bem descrita → Claude Code → PR + code review.
 
 Esta fase é o equivalente ao "Phase 0" de validação de produto — o menor fluxo que prova que o núcleo funciona antes de construir PM layer, dashboard, etc.
 
-### Git Service (`infrastructure/git/`)
-- `create_worktree(repo_path, task_id)` → branch `codeforge/task-{id}` + worktree em `.codeforge/worktrees/task-{id}/`
-- `remove_worktree()` + cleanup de branch
-- `commit()`, `get_diff()`, `get_changed_files()`
+### O que foi implementado
 
-### Executor via Claude Code (`infrastructure/execution/`)
-- `ClaudeCodeExecutor` — monta o prompt da task (descrição + acceptance criteria + contexto do repo), spawna `claude` ou `opencode` como subprocess dentro do worktree
-- Captura stdout/stderr em tempo real, detecta conclusão via exit code + git status
-- `ExecutionResult` — commits feitos, arquivos alterados, output do executor
+**Git Service (`infrastructure/git/git_service.py`)**
 
-### Code Reviewer interno (`application/use_cases/run_code_review.py`)
-- Usa o motor das fases 1–4 (loop agêntico interno) — não spawna Claude Code
-- Recebe: diff do PR, descrição da task, acceptance criteria
-- Produz: `CodeReviewReport` com verdict (APPROVED/CHANGES_REQUESTED) e issues
+Implementa `GitServicePort` usando `asyncio.create_subprocess_exec` com `git -C <path>`:
 
-### CLI (Typer + Rich)
+- `create_worktree(repo_path, task_id)` → branch `codeforge/task-{id}` + worktree em `.codeforge/worktrees/task-{id}/`; retorna `WorktreeInfo(path, branch)`
+- `remove_worktree(worktree_path)` — remove worktree e deleta a branch criada
+- `commit(repo_path, message)` → retorna hash do commit (`git rev-parse HEAD`)
+- `get_diff(repo_path, base_branch)` / `get_changed_files(repo_path, base_branch)` — comparação contra branch base
+- `get_current_branch(repo_path)`, `create_branch(repo_path, name)`, `merge(repo_path, branch)`
+- Helper `_run_git(repo_path, *args)` — lança `RuntimeError` em saída não-zero
+
+**Executor via Claude Code (`infrastructure/execution/claude_code_executor.py`)**
+
+```python
+@dataclass
+class ExecutionConfig:
+    executor: str          # "claude" | "opencode" | "aider"
+    task_prompt: str
+    worktree_path: str
+    timeout_seconds: int = 600
+
+@dataclass
+class ExecutionResult:
+    success: bool
+    exit_code: int
+    output: str
+    changed_files: list[str]
+    diff: str
+```
+
+- `ClaudeCodeExecutor.execute()` — spawna subprocess dentro do worktree com streaming de stdout/stderr; mata o processo em timeout
+- `build_task_prompt(title, description, acceptance_criteria, worktree_path)` — usa `GlobTool` + `ReadTool` para coletar até 6 arquivos Python do repo como contexto; monta prompt estruturado com título, descrição, acceptance criteria e snippets reais do codebase
+- `_collect_git_changes()` — verifica se há uncommitted changes rastreadas (ignora `??` untracked) ou cai para `HEAD~1..HEAD` (captura commits feitos pelo executor)
+- `_build_command()` — mapeia `executor` para o comando correto: `claude -p --dangerously-skip-permissions`, `opencode run`, `aider --message`
+
+**Code Review interno (`application/use_cases/run_code_review.py`)**
+
+Usa o motor agêntico interno (Fases 1–4) — não spawna Claude Code:
+
+```python
+@dataclass
+class CodeReviewInput:
+    task_title: str
+    task_description: str
+    acceptance_criteria: list[str]
+    diff: str
+    changed_files: list[str]
+
+@dataclass
+class CodeReviewReport:
+    verdict: str           # "approved" | "changes_requested"
+    summary: str
+    issues: list[CodeReviewIssue]
+```
+
+- Cria sessão de agente `QA_REVIEWER` com `output_schema=_ReviewSchema` (Pydantic)
+- Parseia JSON da resposta; fallback para `verdict=changes_requested` com issue "Code review inconclusive" quando o modelo retorna texto não estruturado
+
+**CLI (`cli/main.py`, `cli/config.py`, `cli/output.py`)**
+
+Estrutura `_Runtime` centraliza engine + session_factory + 4 repositories. `_run_async[T]()` (PEP 695) faz bridge entre comandos Typer síncronos e código async.
 
 ```bash
-# Projeto
-codeforge project init .                          # inicializa .codeforge/config.toml
-codeforge project set-repo github.com/org/repo   # vincula repo remoto
+codeforge project init <path>          # cria .codeforge/config.toml + .codeforge/codeforge.db
+codeforge project status               # lista projetos no banco local
 
-# Task solo (validação da hipótese central)
-codeforge task create "descrição da task"
-codeforge task run <id>                           # spawna Claude Code no worktree
-codeforge task review <id>                        # code review automático do diff
-codeforge task status <id>
-codeforge task list
+codeforge task create <title>          # --description "..." ou --file path.md
+codeforge task list                    # --status BACKLOG|CODING|... (opcional)
+codeforge task run <id>                # cria worktree → spawna executor → salva execução
+codeforge task review <id>             # code review do diff salvo
+codeforge task status <id>             # mostra branch, worktree, diff_chars, review verdict
 
-# Config
-codeforge config set model anthropic:claude-sonnet-4-5-20250514
-codeforge config set executor claude              # claude | opencode | aider
+codeforge config set model <model>     # ex: anthropic:claude-sonnet-4-6
+codeforge config set executor <exec>   # claude | opencode | aider
+codeforge config set execution_timeout <secs>
+codeforge config set default_branch <branch>
+```
+
+`task run` oferece prompt interativo "Rodar code review automático agora?" quando stdout é TTY. Aceita `--review / --no-review` para uso em scripts.
+
+**Persistence para execuções e reviews (`infrastructure/persistence/`)**
+
+Tabelas adicionadas na Fase 6:
+
+| Tabela | Conteúdo |
+|--------|----------|
+| `task_executions` | exit_code, output, changed_files (JSON), diff, created_at |
+| `task_reviews` | verdict, summary, issues (JSON), created_at |
+
+Repositories: `SqlAlchemyTaskExecutionRepository`, `SqlAlchemyTaskReviewRepository`.
+
+**Configuração local (`.codeforge/config.toml`)**
+
+```toml
+[project]
+name = "my-project"
+default_branch = "main"
+
+[agent]
+model = "anthropic:claude-sonnet-4-6"
+executor = "claude"
+execution_timeout = 600
+
+[database]
+url = "sqlite+aiosqlite:///path/to/.codeforge/codeforge.db"
+```
+
+Carregado com `tomllib` (stdlib Python 3.11+); salvo com `toml`. `find_project_root()` sobe o filesystem até encontrar `.codeforge/config.toml`.
+
+**Saída Rich (`cli/output.py`)**
+
+- `render_projects()` / `render_tasks()` — tabelas Rich com ID truncado (8 chars), status, assignee
+- `render_diff_summary()` — painel de arquivos alterados + preview do diff (3.000 chars)
+- `render_review()` — painel com verdict/summary + tabela de issues por severidade
+
+### Autenticação
+
+O `task run` usa o `claude` CLI, que autentica via OAuth do claude.ai (login via browser, configurado pelo próprio CLI em `~/.claude/.credentials.json`). **Não precisa de `ANTHROPIC_API_KEY`.**
+
+O `task review` usa LiteLLM diretamente (motor interno das Fases 1–4). **Precisa de `ANTHROPIC_API_KEY` no ambiente:**
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Fluxo completo
+
+```
+codeforge task run <id>
+  → GitService.create_worktree()          branch: codeforge/task-{id}
+  → build_task_prompt()                   lê até 6 .py do worktree para contexto
+  → ClaudeCodeExecutor.execute()          spawna: claude -p --dangerously-skip-permissions "<prompt>"
+      → stdout/stderr streaming
+      → timeout em 600s
+  → _collect_git_changes()                diff do que o executor commitou (ignora untracked)
+  → SqlAlchemyTaskExecutionRepository     persiste resultado
+  → [interativo] → task review <id>
+      → run_code_review()                 QA_REVIEWER agent via LiteLLM com o diff
+      → SqlAlchemyTaskReviewRepository    persiste report
+```
+
+### Arquivos
+
+```
+src/codeforge/
+├── infrastructure/
+│   ├── git/
+│   │   └── git_service.py
+│   ├── execution/
+│   │   └── claude_code_executor.py
+│   └── persistence/
+│       ├── models.py         (+ TaskExecutionModel, TaskReviewModel)
+│       └── repositories.py   (+ SqlAlchemyTaskExecutionRepository, SqlAlchemyTaskReviewRepository)
+│
+├── application/
+│   └── use_cases/
+│       └── run_code_review.py
+│
+└── cli/
+    ├── main.py
+    ├── config.py
+    └── output.py
+```
+
+### Bugs encontrados em teste real (pós-implementação)
+
+Dois bugs descobertos ao rodar o fluxo completo end-to-end, não cobertos pelos testes unitários mockados:
+
+| # | Bug | Causa raiz | Fix |
+|---|-----|-----------|-----|
+| 1 | `task run` concluía com exit 0 mas sem criar nenhum arquivo | `claude -p` sem `--dangerously-skip-permissions` exibia prompt de aprovação de escrita; sem TTY, o processo saía silenciosamente | Adicionado `--dangerously-skip-permissions` ao comando |
+| 2 | Diff e arquivos alterados sempre vazios mesmo após executor commitar | `git status --porcelain` retornava `?? __pycache__/` (untracked), que é truthy; o código entrava no branch "uncommitted changes" e chamava `git diff --name-only` que devolvia vazio (mudanças já commitadas) | Filtrar linhas `??` antes de checar se há mudanças rastreadas |
+
+### Testes adicionados (11)
+
+```
+tests/unit/infrastructure/
+  test_git_service.py              4   (worktree, commit, changed_files, remove)
+  test_claude_code_executor.py     2   (execute + output/diff, build_task_prompt)
+
+tests/unit/application/
+  test_run_code_review.py          2   (structured output, fallback unstructured)
+
+tests/integration/
+  test_cli_commands.py             3   (help, project init, task create+list)
+
+Total novo: 11 — Suite: 307 passed, 0 failed
 ```
 
 ### O que esta fase valida
@@ -639,54 +796,178 @@ Sem respostas satisfatórias aqui, as fases seguintes de PM layer e dashboard n�
 
 ---
 
-## Fase 7 — Agentes de PM + Breakdown + Integrações (PENDENTE)
+## Fase 7 — Agentes de PM + Breakdown + Integrações ✅
 
-**Objetivo:** Adicionar os agentes que tornam o CodeForge um sistema de PM real — o breakdown automático é o diferencial central do produto.
+**Objetivo:** Entregar os agentes de PM e integração GitHub que conectam o fluxo de execução da task ao fluxo real de entrega (breakdown útil + PR aberto).
 
-### Agente `breakdown` (o mais crítico)
+### O que foi implementado
 
-Recebe uma `Story` e os `LinkedProjects` de uma `Demand`. Para cada projeto:
-1. Lê o codebase (usando o motor das fases 1–4: Read, Glob, Grep)
-2. Entende a estrutura existente — arquivos relevantes, padrões, entidades relacionadas
-3. Gera tasks técnicas com contexto real:
-   - Descrição precisa com referências a arquivos específicos
-   - Acceptance criteria técnica
-   - Dependências entre tasks
+**1) Breakdown Agent (prioridade máxima)**
 
-A qualidade do breakdown é o que determina se o Claude Code vai executar bem na Fase 6. Tasks vagas falham; tasks com contexto de repo funcionam.
+- Novos `AgentType`: `BREAKDOWN` e `DEMAND_ASSISTANT`
+- Novos system prompts em `application/services/prompt_builder.py` para ambos os agentes
+- Novas configs em `infrastructure/config/agent_configs.py`:
+  - `BREAKDOWN` com tools somente leitura (`Read`, `Glob`, `Grep`)
+  - `DEMAND_ASSISTANT` sem tools de filesystem
+- Novo use case `run_breakdown` (`application/use_cases/run_breakdown.py`):
+  - Recebe `BreakdownInput` (story + repo path + project)
+  - Roda `run_agent_session` com output estruturado (`tasks[]`)
+  - Faz fallback para `success=False` quando o modelo não retorna JSON estruturado
+  - Persiste tasks no `TaskRepositoryPort` com `story_id` vinculado
+- CLI: `codeforge breakdown run <story_id> --repo <path>`
+- API: `POST /api/stories/{story_id}/breakdown`
 
-### Agente `demand_assistant`
+**2) GitHub Gateway + PR flow**
 
-Ajuda o PM a estruturar demandas a partir de uma descrição livre:
-- Sugere objetivo de negócio, critérios de aceitação
-- Propõe entregáveis (stories) com granularidade adequada
-- PM revisa e aprova antes de salvar
+- Novo port: `domain/ports/github_gateway.py` (`GitHubGatewayPort`)
+- Novo adapter: `infrastructure/integrations/github_gateway.py` usando `httpx.AsyncClient` + GitHub REST API v3 + `GITHUB_TOKEN`
+- Novo use case `push_task_to_github`:
+  - Faz push da branch do worktree (`git push -u origin <branch>`)
+  - Cria PR no GitHub com título derivado da task
+  - Body inclui descrição, acceptance criteria e link de diff (`compare` URL)
+  - Persiste `pr_url` na task
+- Entidade `Task` atualizada com `pr_url: str | None`
+- Persistence atualizada (`TaskModel`, repository mapper) + migration `0003_task_pr_url.py`
+- CLI: `codeforge task push <id>`
+- API: `POST /api/tasks/{id}/push`
 
-### Agente `code_reviewer`
+**3) Demand Assistant (prioridade menor)**
 
-Versão especializada do code review que:
-- Conhece o contexto completo: demanda → story → task → acceptance criteria
-- Faz mais do que revisar qualidade de código — verifica se o que foi implementado corresponde ao que foi pedido
-- Produz review com contexto, não genérico
+- Novo use case `run_demand_assistant` (`application/use_cases/run_demand_assistant.py`):
+  - Estrutura texto livre em objetivo de negócio + critérios + stories
+  - Retorna entidades de domínio (`Demand`, `Story[]`)
+  - Persiste quando `persist=True`
+  - Fallback estruturado para `success=False` quando output é inválido
+- CLI: `codeforge demand create "descrição livre"`
+  - Mostra resultado estruturado
+  - Pergunta `Salvar? [y/N]`
+  - Persiste demanda/stories apenas quando confirmado
+- API: `POST /api/demands/assist`
 
-### GitHub Gateway
-- Criar PR após execução concluída, com título e descrição gerados a partir da task
-- Rastrear status de PR (CI, aprovações) e atualizar status no kanban
-- Importar issues do GitHub → `Task`
+### Arquivos principais
 
-### Jira Gateway (opcional, post-validação)
-- Importar epics/stories → `Demand`/`Story`
-- **Jira agêntico** (worker): consulta board via JQL configurável, cria tasks automaticamente
-  - Configuração: qual board, qual JQL (ex: `status = "Ready for Dev"`)
-  - Deduplicação por `source_ref`
+```
+src/codeforge/domain/
+├── entities/agent.py                    (+ BREAKDOWN, DEMAND_ASSISTANT)
+├── entities/task.py                     (+ pr_url)
+└── ports/github_gateway.py              (novo)
+
+src/codeforge/application/use_cases/
+├── run_breakdown.py                     (novo)
+├── run_demand_assistant.py              (novo)
+└── push_task_to_github.py               (novo)
+
+src/codeforge/infrastructure/
+├── config/agent_configs.py              (+ novos AgentConfigs)
+├── integrations/github_gateway.py       (novo)
+├── git/git_service.py                   (+ push_branch/get_remote_url)
+└── persistence/
+    ├── models.py                        (+ tasks.pr_url)
+    └── repositories.py                  (+ map pr_url)
+
+src/codeforge/api/
+├── routers/stories.py                   (+ /api/stories/{id}/breakdown)
+├── routers/tasks.py                     (+ /api/tasks/{id}/push)
+├── routers/demands.py                   (+ /api/demands/assist)
+└── schemas/
+    ├── task.py                          (+ TaskPushResponseSchema, pr_url)
+    ├── story.py                         (+ StoryBreakdownRunSchema)
+    └── demand.py                        (+ Demand assist schemas)
+
+src/codeforge/cli/main.py
+├── task push
+├── breakdown run
+└── demand create
+
+alembic/versions/
+└── 0003_task_pr_url.py                  (novo)
+```
+
+### Avaliação de qualidade pós-entrega
+
+Avaliação realizada após implementação da fase. Problemas encontrados e corrigidos:
+
+| Prioridade | Local | Problema | Fix aplicado |
+|------------|-------|----------|--------------|
+| HIGH | `tasks.py` transition | `ValueError` da máquina de estados resultava em HTTP 500 | `try/except ValueError` → 422 com detalhe |
+| HIGH | `tasks.py` list | `TaskStatus(bad_value)` resultava em HTTP 500 | Idem |
+| HIGH | `stories.py` list | `StoryStatus(bad_value)` resultava em HTTP 500 | Idem |
+| HIGH | `demands.py` list | `DemandStatus(bad_value)` resultava em HTTP 500 | Idem |
+| MEDIUM | `run_breakdown.py` | `assert isinstance` removível com `python -O` | Substituído por `if not isinstance(...): return` |
+| MEDIUM | `run_demand_assistant.py` | Idem | Idem |
+| MEDIUM | `stories.py` breakdown | Falha do agente retornava HTTP 200 + lista vazia | Retorna 422 com detalhe do raw_output |
+| MEDIUM | `stories.py` | `_task_to_response` duplicado em relação a `tasks.py` | Renomeado para `task_to_response` (público) e importado |
+| LOW | Todos routers | `HTTP_422_UNPROCESSABLE_ENTITY` (deprecated) | Substituído por `HTTP_422_UNPROCESSABLE_CONTENT` |
+
+### Testes adicionados (10)
+
+```
+tests/unit/application/
+  test_run_breakdown.py          2
+  test_run_demand_assistant.py   2
+  test_push_task_to_github.py    1
+
+tests/unit/infrastructure/
+  test_github_gateway.py         2
+
+tests/integration/api/
+  test_routes.py                 3  (+ invalid status → 422, state machine → 422, bad filter → 422)
+
+Total novo: 10 — Suite: 317 passed, 0 failed
+```
 
 ---
 
-## Fase 8 — Dashboard React (PENDENTE)
+## Fase 8 — Dashboard React (Completa)
 
 **Objetivo:** Interface visual para PM e dev. O PM vê o produto, o dev vê o pipeline. Cada um no seu nível de detalhe.
 
 React 19 + TypeScript + Tailwind CSS 4 + Zustand + TanStack Query
+
+### Status do Desenvolvimento (Entregável Mínimo)
+✅ **Step 1:** Sidebar + Roteamento base configurado com Zustand.
+✅ **Step 2:** ProductView (Demandas e Histórias) listando dados reais da API.
+✅ **Step 3:** Modal "Nova Demanda com IA" funcional com endpoint `/api/demands/assist`.
+✅ **Step 4:** KanbanView (Sprint Board) funcional dividindo tasks por colunas mapeadas ao status.
+✅ **Step 5:** TaskDetailPanel (slide-in) exibindo badge de assign e tabs de Pipeline/Logs.
+✅ **Step 6:** AgentMonitorView com polling real de `/api/agents` a cada 5s e métricas locais.
+✅ **Step 7:** SettingsView com leitura real de `GET /api/projects/{id}` e renderizacao das politicas/configs do projeto.
+✅ **Step 8:** Base de gestão manual/Jira-like entregue: criação manual de Story por demanda, criação manual de Task no board e planejamento de Sprint com seleção de histórias e ações de iniciar/concluir.
+
+### Fluxos manuais adicionados após o MVP inicial
+- **Criação manual de Story:** modal em `DemandCard`, persiste via `POST /api/stories` e atualiza a árvore da demanda.
+- **Criação manual de Task:** modal no `KanbanView`, permite criar task manual no backlog vinculando opcionalmente a uma Story.
+- **Planejamento de Sprint:** modal de Sprint com criação via `POST /api/sprints`, vinculação de histórias via `POST /api/stories/{id}/add-to-sprint` e ações de início/conclusão.
+- **Hierarquia visível na UI:** a ProductView agora explicita `Demanda -> Story -> Task`, mostrando lado a lado trabalho manual e breakdown por IA.
+
+### Ajustes complementares aplicados durante a implementação
+- `GET /api/agents` passou a aceitar listagem global sem exigir `task_id`, mantendo filtro opcional por task.
+- Sidebar agora exibe seletor de projeto ativo, alinhando a navegação com o fluxo PM/Dev.
+- Melhorado o tratamento de erro do client HTTP no frontend para exibir `detail` da API quando disponível.
+- Settings passou a refletir os dados reais do backend; integracoes seguem como placeholder visual porque a API ainda nao expoe estado seguro de secrets.
+- ProductView passou a mostrar a hierarquia Demanda -> Story -> Task, deixando visivel o trabalho humano/manual junto do breakdown por IA.
+- Adicionadas criacao manual de Story por demanda, criacao manual de Task no backlog e modal de planejamento de Sprint com selecao de historias e acoes de iniciar/concluir sprint.
+- Corrigido o backend de agentes para suportar monitoramento global do motor sem depender de `task_id`, necessario para a tela operacional.
+
+### Avaliação pós-entrega e correções aplicadas
+
+| # | Severidade | Problema | Arquivo | Status |
+|---|------------|----------|---------|--------|
+| 1 | CRITICAL | `NewDemandModal` chamava `POST /api/demands` após `/assist`, criando demanda duplicada | `NewDemandModal.tsx` | ✅ Corrigido |
+| 2 | CRITICAL | `BreakdownModal` usava checkboxes `defaultChecked` sem estado — "Aprovar Selecionadas" aprovava tudo independente da seleção | `BreakdownModal.tsx` | ✅ Corrigido |
+| 3 | CRITICAL | Race condition: `assignMutation.mutate('ai')` e `transitionMutation.mutate('coding')` disparados em paralelo | `TaskDetailPanel.tsx` | ✅ Corrigido (chain com `mutateAsync`) |
+| 4 | HIGH | Tasks `completed`/`failed` invisíveis — nenhuma coluna no Kanban as exibia | `KanbanView.tsx` | ✅ Corrigido (coluna DONE adicionada) |
+| 5 | HIGH | Botão "Interromper Agente" sem handler — clique silencioso | `TaskDetailPanel.tsx` | ✅ Corrigido (disabled) |
+| 6 | HIGH | Botão "Aprovar & Merge" sem handler — PR nunca criado | `TaskDetailPanel.tsx` | ✅ Corrigido (chama `pushTask`) |
+| 7 | HIGH | Select "Responsável" decorativo sem lógica de filtro | `KanbanView.tsx` | ✅ Corrigido (filtra `assignee_type`) |
+| 8 | HIGH | `ProductView` duplicava `GlobalProjectLoader` (useEffect + useQuery de projetos) | `ProductView.tsx` | ✅ Corrigido (removida duplicata) |
+| 9 | HIGH | "Memória do Projeto" com id `'settings'` causava highlight duplo com "Configurações" | `Sidebar.tsx` | ✅ Corrigido (`!disabled` na condição de destaque) |
+| 10 | MEDIUM | `PipelineTab` exibia apenas 4 das 7 fases reais do pipeline de agentes | `PipelineTab.tsx` | ✅ Corrigido (todas 7 fases: complexity_assessor, spec_writer, spec_critic, planner, coder, qa_reviewer, qa_fixer) |
+| 11 | MEDIUM | `AgentTable` calculava progresso com `steps_executed * 8` — estimativa incorreta | `AgentTable.tsx` | ✅ Corrigido (usa `task.execution_progress.progress_pct`) |
+| 12 | LOW | `createDemand` e `assistDemand` tipadas como `any` | `api/demands.ts` | ✅ Corrigido (interfaces `CreateDemandInput` e `AssistDemandResult`) |
+| 13 | LOW | `breakdownStory` tipada como `any` | `api/stories.ts` | ✅ Corrigido (retorna `Task[]`) |
+
+**Build final:** `tsc -b && vite build` — 0 erros TypeScript, 0 warnings.
 
 ### Visão do PM — por entregável
 

@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
 from codeforge.api.dependencies import RepositoryContainer
-from codeforge.api.routers import agents, demands, intelligence, projects, sprints, stories, tasks
+from codeforge.api.routers import (
+    agents,
+    ai,
+    demands,
+    intelligence,
+    projects,
+    repositories,
+    settings,
+    skills,
+    sprints,
+    stories,
+    tasks,
+    team_documents,
+    teams,
+)
 from codeforge.infrastructure.persistence.database import (
     create_engine,
     create_session_factory,
@@ -19,14 +35,36 @@ from codeforge.infrastructure.persistence.repositories import (
     SqlAlchemyAgentSkillRepository,
     SqlAlchemyDemandRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemyRepositoryStore,
     SqlAlchemySprintRepository,
     SqlAlchemyStoryRepository,
     SqlAlchemyTaskRepository,
+    SqlAlchemyTeamDocumentRepository,
+    SqlAlchemyTeamRepository,
 )
 
 
-def create_app(database_url: str = "sqlite+aiosqlite:///./codeforge.db") -> FastAPI:
-    engine = create_engine(database_url)
+def _load_env_file() -> None:
+    env_file = Path(__file__).parents[3] / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key not in os.environ:
+            os.environ[key] = value.strip()
+
+
+def create_app(database_url: str | None = None) -> FastAPI:
+    _load_env_file()
+    resolved_database_url = database_url or os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/kodejutso",
+    )
+    engine = create_engine(resolved_database_url)
     session_factory = create_session_factory(engine)
 
     @asynccontextmanager
@@ -38,9 +76,14 @@ def create_app(database_url: str = "sqlite+aiosqlite:///./codeforge.db") -> Fast
     app = FastAPI(title="CodeForge API", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.analysis_jobs = {}
+    app.state.generation_jobs = {}
     app.state.repositories = RepositoryContainer(
+        team_document_repository=SqlAlchemyTeamDocumentRepository(session_factory),
+        team_repository=SqlAlchemyTeamRepository(session_factory),
         task_repository=SqlAlchemyTaskRepository(session_factory),
         project_repository=SqlAlchemyProjectRepository(session_factory),
+        repository_store=SqlAlchemyRepositoryStore(session_factory),
         demand_repository=SqlAlchemyDemandRepository(session_factory),
         story_repository=SqlAlchemyStoryRepository(session_factory),
         sprint_repository=SqlAlchemySprintRepository(session_factory),
@@ -59,12 +102,18 @@ def create_app(database_url: str = "sqlite+aiosqlite:///./codeforge.db") -> Fast
         return JSONResponse(status_code=409, content={"detail": f"Conflict: {msg}"})
 
     app.include_router(projects.router)
+    app.include_router(repositories.router)
+    app.include_router(ai.router)
+    app.include_router(teams.router)
+    app.include_router(team_documents.router)
     app.include_router(demands.router)
     app.include_router(stories.router)
     app.include_router(sprints.router)
     app.include_router(tasks.router)
     app.include_router(agents.router)
     app.include_router(intelligence.router)
+    app.include_router(settings.router)
+    app.include_router(skills.router)
 
     return app
 

@@ -14,6 +14,7 @@ from codeforge.domain.events.demand_events import (
     DemandStatusChanged,
 )
 from codeforge.domain.value_objects.project_id import ProjectId
+from codeforge.domain.value_objects.team_id import TeamId
 
 
 def test_demand_create_returns_event():
@@ -107,3 +108,15 @@ def test_demand_with_linked_projects():
     )
     assert len(demand.linked_projects) == 1
     assert demand.linked_projects[0].base_branch == "develop"
+
+
+def test_demand_create_with_team_id() -> None:
+    team_id = TeamId.generate()
+
+    demand, _ = Demand.create(
+        title="t",
+        business_objective="o",
+        team_id=team_id,
+    )
+
+    assert demand.team_id == team_id

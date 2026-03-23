@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from codeforge.application.use_cases.run_agent_session import _execute_tool_call
-
 
 # --- Tool error hint ---
 

@@ -7,21 +7,26 @@ from enum import StrEnum
 from ..events.base import DomainEvent
 from ..events.story_events import StoryAddedToSprint, StoryCreated, StoryStatusChanged
 from ..value_objects.demand_id import DemandId
+from ..value_objects.project_id import ProjectId
+from ..value_objects.repository_id import RepositoryId
 from ..value_objects.sprint_id import SprintId
 from ..value_objects.story_id import StoryId
 
 
 class StoryStatus(StrEnum):
+    PROPOSED = "proposed"
     BACKLOG = "backlog"
     BREAKDOWN_PENDING = "breakdown_pending"
     BREAKDOWN_COMPLETE = "breakdown_complete"
     IN_SPRINT = "in_sprint"
     IN_PROGRESS = "in_progress"
     DONE = "done"
+    REJECTED = "rejected"
     CANCELLED = "cancelled"
 
 
 VALID_STORY_TRANSITIONS: dict[StoryStatus, frozenset[StoryStatus]] = {
+    StoryStatus.PROPOSED: frozenset({StoryStatus.BACKLOG, StoryStatus.REJECTED}),
     StoryStatus.BACKLOG: frozenset({
         StoryStatus.BREAKDOWN_PENDING, StoryStatus.IN_SPRINT, StoryStatus.CANCELLED
     }),
@@ -36,6 +41,7 @@ VALID_STORY_TRANSITIONS: dict[StoryStatus, frozenset[StoryStatus]] = {
     }),
     StoryStatus.IN_PROGRESS: frozenset({StoryStatus.DONE, StoryStatus.CANCELLED}),
     StoryStatus.DONE: frozenset(),
+    StoryStatus.REJECTED: frozenset(),
     StoryStatus.CANCELLED: frozenset(),
 }
 
@@ -47,6 +53,10 @@ class Story:
     title: str
     description: str
     acceptance_criteria: list[str]
+    technical_references: list[str]
+    project_id: ProjectId | None
+    repository_ids: list[RepositoryId]
+    linked_projects: list[ProjectId]
     sprint_id: SprintId | None = None
     status: StoryStatus = StoryStatus.BACKLOG
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -80,6 +90,12 @@ class Story:
     def cancel(self) -> list[DomainEvent]:
         return self.transition_to(StoryStatus.CANCELLED)
 
+    def approve(self) -> list[DomainEvent]:
+        return self.transition_to(StoryStatus.BACKLOG)
+
+    def reject(self) -> list[DomainEvent]:
+        return self.transition_to(StoryStatus.REJECTED)
+
     @classmethod
     def create(
         cls,
@@ -87,6 +103,11 @@ class Story:
         title: str,
         description: str,
         acceptance_criteria: list[str] | None = None,
+        technical_references: list[str] | None = None,
+        project_id: ProjectId | None = None,
+        repository_ids: list[RepositoryId] | None = None,
+        linked_projects: list[ProjectId] | None = None,
+        status: StoryStatus = StoryStatus.BACKLOG,
     ) -> tuple[Story, list[DomainEvent]]:
         story_id = StoryId.generate()
         story = cls(
@@ -95,6 +116,11 @@ class Story:
             title=title,
             description=description,
             acceptance_criteria=acceptance_criteria or [],
+            technical_references=technical_references or [],
+            project_id=project_id,
+            repository_ids=repository_ids or [],
+            linked_projects=linked_projects or [],
+            status=status,
         )
         events: list[DomainEvent] = [
             StoryCreated(

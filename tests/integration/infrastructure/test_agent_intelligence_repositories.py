@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from codeforge.domain.entities.agent import AgentType
 from codeforge.domain.entities.agent_memory import AgentMemory
 from codeforge.domain.entities.agent_skill import AgentSkill
 from codeforge.domain.value_objects.project_id import ProjectId
@@ -65,7 +64,6 @@ async def test_list_for_agent_includes_global_and_project(skill_repo):
 
 @pytest.mark.asyncio
 async def test_list_for_agent_filters_inactive(skill_repo):
-    pid = ProjectId.generate()
     active = AgentSkill.create(id="a1", name="Active", content="x", always_active=True)
     inactive = AgentSkill.create(id="i1", name="Inactive", content="y", always_active=False)
     await skill_repo.save(active)

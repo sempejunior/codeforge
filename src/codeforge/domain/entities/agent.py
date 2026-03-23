@@ -16,6 +16,8 @@ class AgentType(StrEnum):
     CODER = "coder"
     QA_REVIEWER = "qa_reviewer"
     QA_FIXER = "qa_fixer"
+    BREAKDOWN = "breakdown"
+    DEMAND_ASSISTANT = "demand_assistant"
 
 
 class SessionOutcome(StrEnum):

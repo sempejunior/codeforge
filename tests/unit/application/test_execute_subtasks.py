@@ -28,7 +28,9 @@ def _model() -> ModelId:
     return ModelId("anthropic:claude-sonnet-4-20250514")
 
 
-def _make_plan(*subtask_titles: str, depends_on: dict[str, list[str]] | None = None) -> ImplementationPlan:
+def _make_plan(
+    *subtask_titles: str, depends_on: dict[str, list[str]] | None = None
+) -> ImplementationPlan:
     depends_on = depends_on or {}
     subtasks = [
         Subtask(

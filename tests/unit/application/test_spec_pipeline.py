@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -332,5 +332,5 @@ async def test_usage_accumulated_across_phases(tmp_path: Path):
         )
 
     assert result.success is True
-    assert result.total_usage.input_tokens == 400  # 200 per phase × 2
+    assert result.total_usage.input_tokens == 400  # 200 per phase x 2
     assert result.total_usage.output_tokens == 200

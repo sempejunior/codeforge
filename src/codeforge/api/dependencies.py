@@ -12,16 +12,22 @@ from codeforge.infrastructure.persistence.repositories import (
     SqlAlchemyAgentSkillRepository,
     SqlAlchemyDemandRepository,
     SqlAlchemyProjectRepository,
+    SqlAlchemyRepositoryStore,
     SqlAlchemySprintRepository,
     SqlAlchemyStoryRepository,
     SqlAlchemyTaskRepository,
+    SqlAlchemyTeamDocumentRepository,
+    SqlAlchemyTeamRepository,
 )
 
 
 @dataclass(frozen=True)
 class RepositoryContainer:
+    team_document_repository: SqlAlchemyTeamDocumentRepository
+    team_repository: SqlAlchemyTeamRepository
     task_repository: SqlAlchemyTaskRepository
     project_repository: SqlAlchemyProjectRepository
+    repository_store: SqlAlchemyRepositoryStore
     demand_repository: SqlAlchemyDemandRepository
     story_repository: SqlAlchemyStoryRepository
     sprint_repository: SqlAlchemySprintRepository

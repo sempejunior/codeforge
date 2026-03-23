@@ -1,29 +1,58 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
+from typing import cast
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from codeforge.api.app import create_app
+from codeforge.infrastructure.config.workspace import WORKSPACE_ROOT_ENV
+
+
+class TempAsyncClient(AsyncClient):
+    _temp_dir: Path
+
+
+def _make_git_repo(tmp_path, name: str) -> str:
+    repo_path = tmp_path / name
+    repo_path.mkdir()
+    (repo_path / ".git").mkdir()
+    return str(repo_path)
+
+
+def _tmp_dir(client: AsyncClient) -> Path:
+    return cast(Path, cast(TempAsyncClient, client)._temp_dir)
 
 
 @pytest.fixture
-async def client(tmp_path):
+async def client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     database_path = tmp_path / "api.db"
-    app = create_app(database_url=f"sqlite+aiosqlite:///{database_path}")
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app=app),
+    monkeypatch.setenv(WORKSPACE_ROOT_ENV, str(tmp_path))
+    fastapi_app = create_app(database_url=f"sqlite+aiosqlite:///{database_path}")
+    fastapi_app.state.temp_dir = tmp_path
+    async with fastapi_app.router.lifespan_context(fastapi_app), TempAsyncClient(
+        transport=ASGITransport(app=fastapi_app),
         base_url="http://test",
     ) as async_client:
+        async_client._temp_dir = tmp_path
         yield async_client
 
 
 @pytest.mark.asyncio
 async def test_project_and_task_routes(client: AsyncClient) -> None:
+    team_response = await client.post("/api/teams", json={"name": "Payments"})
+    team_id = team_response.json()["id"]
+    _make_git_repo(_tmp_dir(client), "backend")
     project_response = await client.post(
         "/api/projects",
-        json={"name": "backend", "path": "/tmp/backend", "default_branch": "main"},
+        json={
+            "name": "backend",
+            "repo_url": "https://github.com/acme/backend",
+            "team_id": team_id,
+            "default_branch": "main",
+        },
     )
     assert project_response.status_code == 201
     project = project_response.json()
@@ -46,12 +75,17 @@ async def test_project_and_task_routes(client: AsyncClient) -> None:
     assert assign_response.status_code == 200
     assert assign_response.json()["assignee_type"] == "ai"
 
+    list_response = await client.get("/api/tasks", params={"team_id": team_id})
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()] == [task["id"]]
+
 
 @pytest.mark.asyncio
 async def test_demand_story_sprint_routes(client: AsyncClient) -> None:
+    _make_git_repo(_tmp_dir(client), "web")
     project_response = await client.post(
         "/api/projects",
-        json={"name": "web", "path": "/tmp/web", "default_branch": "main"},
+        json={"name": "web", "repo_url": "https://github.com/acme/web", "default_branch": "main"},
     )
     project = project_response.json()
 
@@ -97,6 +131,62 @@ async def test_demand_story_sprint_routes(client: AsyncClient) -> None:
     )
     assert add_story_response.status_code == 200
     assert add_story_response.json()["sprint_id"] == sprint["id"]
+
+
+@pytest.mark.asyncio
+async def test_transition_task_invalid_status_returns_422(client: AsyncClient) -> None:
+    _make_git_repo(_tmp_dir(client), "p")
+    project_resp = await client.post(
+        "/api/projects",
+        json={"name": "p", "repo_url": "https://github.com/acme/p", "default_branch": "main"},
+    )
+    project = project_resp.json()
+    task_resp = await client.post(
+        "/api/tasks",
+        json={"project_id": project["id"], "title": "T", "description": "D"},
+    )
+    task = task_resp.json()
+
+    resp = await client.post(
+        f"/api/tasks/{task['id']}/transition",
+        json={"status": "not_a_real_status"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_transition_task_invalid_state_machine_returns_422(client: AsyncClient) -> None:
+    _make_git_repo(_tmp_dir(client), "p2")
+    project_resp = await client.post(
+        "/api/projects",
+        json={"name": "p2", "repo_url": "https://github.com/acme/p2", "default_branch": "main"},
+    )
+    project = project_resp.json()
+    task_resp = await client.post(
+        "/api/tasks",
+        json={"project_id": project["id"], "title": "T", "description": "D"},
+    )
+    task = task_resp.json()
+
+    # PENDING → COMPLETED is not a valid transition
+    resp = await client.post(
+        f"/api/tasks/{task['id']}/transition",
+        json={"status": "completed"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_invalid_status_filter_returns_422(client: AsyncClient) -> None:
+    _make_git_repo(_tmp_dir(client), "p3")
+    project_resp = await client.post(
+        "/api/projects",
+        json={"name": "p3", "repo_url": "https://github.com/acme/p3", "default_branch": "main"},
+    )
+    project = project_resp.json()
+
+    resp = await client.get("/api/tasks", params={"project_id": project["id"], "status": "bad"})
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

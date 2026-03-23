@@ -116,7 +116,7 @@ class GrepTool(DefinedTool):
         import re
         from pathlib import Path
 
-        _EXCLUDED_DIRS = frozenset({
+        _excluded_dirs = frozenset({
             "node_modules", ".git", "__pycache__", ".venv", "venv", ".mypy_cache"
         })
 
@@ -132,7 +132,7 @@ class GrepTool(DefinedTool):
         else:
             candidates = [
                 p for p in search.rglob("*")
-                if not any(part in _EXCLUDED_DIRS for part in p.parts)
+                if not any(part in _excluded_dirs for part in p.parts)
             ]
 
         matches: list[str] = []

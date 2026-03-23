@@ -9,6 +9,7 @@ from codeforge.domain.events.story_events import (
     StoryStatusChanged,
 )
 from codeforge.domain.value_objects.demand_id import DemandId
+from codeforge.domain.value_objects.project_id import ProjectId
 from codeforge.domain.value_objects.sprint_id import SprintId
 
 
@@ -34,6 +35,22 @@ def test_story_create_returns_event(demand_id):
 def test_story_create_defaults_empty_criteria(demand_id):
     story, _ = Story.create(demand_id=demand_id, title="t", description="d")
     assert story.acceptance_criteria == []
+    assert story.technical_references == []
+    assert story.repository_ids == []
+    assert story.project_id is None
+
+
+def test_story_create_with_linked_projects(demand_id):
+    project_id = ProjectId.generate()
+
+    story, _ = Story.create(
+        demand_id=demand_id,
+        title="t",
+        description="d",
+        linked_projects=[project_id],
+    )
+
+    assert story.linked_projects == [project_id]
 
 
 def test_story_add_to_sprint(demand_id):
@@ -97,3 +114,29 @@ def test_story_breakdown_complete_back_to_backlog(demand_id):
     story.transition_to(StoryStatus.BREAKDOWN_COMPLETE)
     story.transition_to(StoryStatus.BACKLOG)
     assert story.status == StoryStatus.BACKLOG
+
+
+def test_story_proposed_can_be_approved(demand_id):
+    story, _ = Story.create(
+        demand_id=demand_id,
+        title="t",
+        description="d",
+        status=StoryStatus.PROPOSED,
+    )
+
+    story.approve()
+
+    assert story.status == StoryStatus.BACKLOG
+
+
+def test_story_proposed_can_be_rejected(demand_id):
+    story, _ = Story.create(
+        demand_id=demand_id,
+        title="t",
+        description="d",
+        status=StoryStatus.PROPOSED,
+    )
+
+    story.reject()
+
+    assert story.status == StoryStatus.REJECTED

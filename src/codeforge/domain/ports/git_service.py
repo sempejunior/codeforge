@@ -29,3 +29,11 @@ class GitServicePort(ABC):
 
     @abstractmethod
     async def get_current_branch(self, repo_path: str) -> str: ...
+
+    @abstractmethod
+    async def push_branch(
+        self,
+        repo_path: str,
+        branch_name: str,
+        remote: str = "origin",
+    ) -> None: ...

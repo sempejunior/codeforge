@@ -46,7 +46,12 @@ class TaskResponseSchema(BaseModel):
     source_ref: str | None
     worktree_path: str | None
     branch_name: str | None
+    pr_url: str | None
     error_message: str | None
     execution_progress: ExecutionProgressSchema
     created_at: datetime
     updated_at: datetime
+
+
+class TaskPushResponseSchema(BaseModel):
+    pr_url: str

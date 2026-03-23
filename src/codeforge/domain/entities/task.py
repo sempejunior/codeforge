@@ -128,6 +128,7 @@ class Task:
     source_ref: str | None = None
     worktree_path: str | None = None
     branch_name: str | None = None
+    pr_url: str | None = None
     error_message: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))

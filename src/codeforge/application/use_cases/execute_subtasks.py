@@ -62,14 +62,16 @@ async def execute_subtasks(
                 await asyncio.sleep(_STAGGER_DELAY_S)
             tasks.append(
                 asyncio.create_task(
-                    _execute_subtask(subtask, task_id, model, provider, tools, project_path, abort_event)
+                    _execute_subtask(
+                        subtask, task_id, model, provider, tools, project_path, abort_event
+                    )
                 )
             )
 
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         any_rate_limited = False
-        for subtask, raw in zip(batch, raw_results):
+        for subtask, raw in zip(batch, raw_results, strict=False):
             if isinstance(raw, BaseException):
                 logger.exception("Subtask %s raised: %s", subtask.id, raw)
                 subtask.mark_failed()

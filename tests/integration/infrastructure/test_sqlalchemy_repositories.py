@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, date, datetime
 
 import pytest
@@ -52,16 +53,12 @@ async def test_project_repository_persists_and_lists(repositories: dict[str, obj
     repo = repositories["project"]
     assert isinstance(repo, SqlAlchemyProjectRepository)
 
-    project = Project.create(name="backend", path="/tmp/backend")
+    project = Project.create(name="backend")
     await repo.save(project)
 
     loaded = await repo.get_by_id(project.id)
     assert loaded is not None
     assert loaded.name == "backend"
-
-    by_path = await repo.get_by_path("/tmp/backend")
-    assert by_path is not None
-    assert by_path.id == project.id
 
     all_projects = await repo.list_all()
     assert len(all_projects) == 1
@@ -74,16 +71,18 @@ async def test_task_repository_filters_by_status(repositories: dict[str, object]
     assert isinstance(project_repo, SqlAlchemyProjectRepository)
     assert isinstance(task_repo, SqlAlchemyTaskRepository)
 
-    project = Project.create(name="api", path="/tmp/api")
+    project = Project.create(name="api")
     await project_repo.save(project)
 
     task, _ = Task.create(project_id=project.id, title="Add endpoint", description="Create route")
     task.assign_to(AssigneeType.AI)
+    task.pr_url = "https://github.com/acme/repo/pull/10"
     await task_repo.save(task)
 
     loaded = await task_repo.get_by_id(task.id)
     assert loaded is not None
     assert loaded.assignee_type == AssigneeType.AI
+    assert loaded.pr_url == "https://github.com/acme/repo/pull/10"
 
     filtered = await task_repo.list_by_project(project.id, status=task.status)
     assert len(filtered) == 1
@@ -97,7 +96,7 @@ async def test_demand_repository_roundtrip(repositories: dict[str, object]) -> N
     assert isinstance(project_repo, SqlAlchemyProjectRepository)
     assert isinstance(demand_repo, SqlAlchemyDemandRepository)
 
-    project = Project.create(name="frontend", path="/tmp/frontend")
+    project = Project.create(name="frontend")
     await project_repo.save(project)
 
     demand, _ = Demand.create(
@@ -191,3 +190,24 @@ async def test_agent_session_repository_roundtrip(repositories: dict[str, object
 
     by_task = await repo.list_by_task_id(TaskId(task_id))
     assert len(by_task) == 1
+
+
+@pytest.mark.asyncio
+async def test_init_database_applies_demand_generation_migration(tmp_path) -> None:
+    database_path = tmp_path / "codeforge.db"
+    database_url = f"sqlite+aiosqlite:///{database_path}"
+    engine = create_engine(database_url)
+
+    await init_database(engine)
+    await engine.dispose()
+
+    connection = sqlite3.connect(database_path)
+    try:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(demands)").fetchall()
+        }
+    finally:
+        connection.close()
+
+    assert "generation_status" in columns
+    assert "generation_error" in columns

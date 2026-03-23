@@ -49,10 +49,14 @@ async def get_agent_session(
 
 @router.get("/api/agents", response_model=list[AgentSessionResponseSchema])
 async def list_agent_sessions(
-    task_id: str = Query(...),
+    task_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
     repositories: RepositoryContainer = Depends(get_repositories),
 ) -> list[AgentSessionResponseSchema]:
-    sessions = await repositories.agent_session_repository.list_by_task_id(TaskId(task_id))
+    if task_id is not None:
+        sessions = await repositories.agent_session_repository.list_by_task_id(TaskId(task_id))
+    else:
+        sessions = await repositories.agent_session_repository.list_all(limit=limit)
     return [_to_response(session) for session in sessions]
 
 

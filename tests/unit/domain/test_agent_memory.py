@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from codeforge.domain.entities.agent_memory import AgentMemory
 from codeforge.domain.value_objects.project_id import ProjectId
 
